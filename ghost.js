@@ -24,6 +24,188 @@ const reloadBtn = document.getElementById("reload");
 const GUN_OK = [gunEl, gunInner, pickup, pickupInner, ghostHpBar, ghostHpFill,
                 hud, ammoEl, reloadText, toastEl, fireBtn, reloadBtn, overlayTitle].every(Boolean);
 
+// ---------- Sound effects ----------
+// All sounds are made with code (Web Audio), so there are no audio files to upload.
+// Phones only allow sound after the first touch, so the sound starts on your first tap or key press.
+const sfx = (() => {
+    let ctx = null, master = null, noiseBuf = null;
+    let muted = false;
+    try { muted = localStorage.getItem("ghostMuted") === "1"; } catch (e) { /* ok */ }
+    const lastPlayed = {};
+    const muteBtn = document.getElementById("mute");
+
+    function showMute() {
+        if (!muteBtn) return;
+        muteBtn.textContent = muted ? "\uD83D\uDD07" : "\uD83D\uDD0A";
+        muteBtn.setAttribute("aria-pressed", muted ? "true" : "false");
+    }
+
+    function setup() {
+        if (ctx) return true;
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return false;
+        ctx = new AC();
+        const comp = ctx.createDynamicsCompressor();      // stops loud sounds from clipping
+        master = ctx.createGain();
+        master.gain.value = muted ? 0 : 0.5;
+        master.connect(comp);
+        comp.connect(ctx.destination);
+        noiseBuf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
+        const data = noiseBuf.getChannelData(0);
+        for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+        return true;
+    }
+
+    // A musical beep that slides from frequency f0 to f1
+    function tone(type, f0, f1, dur, vol, delay) {
+        const t = ctx.currentTime + (delay || 0);
+        const osc = ctx.createOscillator();
+        const g = ctx.createGain();
+        osc.type = type;
+        osc.frequency.setValueAtTime(f0, t);
+        if (f1 !== f0) osc.frequency.exponentialRampToValueAtTime(Math.max(f1, 1), t + dur);
+        g.gain.setValueAtTime(0.0001, t);
+        g.gain.linearRampToValueAtTime(vol, t + 0.008);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+        osc.connect(g);
+        g.connect(master);
+        osc.start(t);
+        osc.stop(t + dur + 0.05);
+    }
+
+    // A burst of noise through a filter (bangs, whooshes, clicks)
+    function noise(dur, vol, filter, f0, f1, delay, q) {
+        const t = ctx.currentTime + (delay || 0);
+        const src = ctx.createBufferSource();
+        src.buffer = noiseBuf;
+        const fl = ctx.createBiquadFilter();
+        fl.type = filter;
+        fl.Q.value = q || 1;
+        fl.frequency.setValueAtTime(f0, t);
+        if (f1 !== f0) fl.frequency.exponentialRampToValueAtTime(Math.max(f1, 1), t + dur);
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(0.0001, t);
+        g.gain.linearRampToValueAtTime(vol, t + 0.008);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+        src.connect(fl);
+        fl.connect(g);
+        g.connect(master);
+        src.start(t, Math.random() * 0.5);
+        src.stop(t + dur + 0.05);
+    }
+
+    function arpeggio(type, notes, step, dur, vol, delay) {
+        notes.forEach((f, i) => tone(type, f, f, dur, vol, (delay || 0) + i * step));
+    }
+
+    const FIRE_SKILLS = ["fireballs", "inferno", "meteors", "beam", "cross", "spiral", "slam"];
+
+    const sounds = {
+        click:   () => tone("square", 700, 700, 0.04, 0.15),
+        // gun
+        shot:    () => { noise(0.35, 0.9, "lowpass", 3000, 200); tone("sawtooth", 150, 40, 0.3, 0.7); noise(0.05, 0.5, "highpass", 2000, 2000); },
+        pump:    () => { noise(0.04, 0.45, "bandpass", 1800, 1800, 0, 3); noise(0.05, 0.45, "bandpass", 1200, 1200, 0.09, 3); },
+        empty:   () => { noise(0.03, 0.35, "highpass", 3000, 3000); tone("square", 900, 700, 0.04, 0.12); },
+        reload:  () => { noise(0.05, 0.4, "bandpass", 1500, 1500, 0, 3); },
+        shell:   () => { noise(0.04, 0.45, "bandpass", 2200, 2200, 0, 4); tone("square", 300, 200, 0.05, 0.15); },
+        zap:     () => { tone("square", 900, 200, 0.25, 0.22); tone("sawtooth", 1300, 300, 0.2, 0.15); },
+        hit:     () => { noise(0.15, 0.6, "lowpass", 1500, 300); tone("sine", 200, 60, 0.2, 0.6); },
+        // ghost moves
+        warn:    () => { tone("square", 880, 880, 0.08, 0.2); tone("square", 880, 880, 0.08, 0.2, 0.12); },
+        dash:    () => noise(0.4, 0.5, "bandpass", 400, 2500, 0, 1.5),
+        magic:   (d) => { tone("sine", 300, 900, d, 0.2); tone("triangle", 450, 1350, d, 0.12); },
+        charge:  (d) => { tone("sawtooth", 110, 330, d, 0.18); noise(d, 0.2, "lowpass", 300, 900); },
+        teleport:() => { tone("sine", 1200, 200, 0.3, 0.3); tone("sine", 200, 1200, 0.25, 0.3, 0.15); },
+        fireball:() => { noise(0.35, 0.4, "bandpass", 1500, 500, 0, 2); tone("sawtooth", 300, 120, 0.3, 0.15); },
+        pulse:   () => { tone("sine", 120, 40, 0.5, 0.8); noise(0.3, 0.3, "lowpass", 800, 100); },
+        stone:   () => { tone("sine", 90, 45, 0.25, 0.8); noise(0.15, 0.5, "lowpass", 600, 150); },
+        bats:    () => { for (let i = 0; i < 6; i++) tone("triangle", 1700 + Math.random() * 400, 2600, 0.06, 0.12, i * 0.06); },
+        inferno: () => { noise(0.8, 0.5, "lowpass", 2000, 150); tone("sawtooth", 80, 160, 0.7, 0.3); },
+        spiral:  () => { for (let i = 0; i < 8; i++) noise(0.15, 0.3, "bandpass", 1800, 700, i * 0.25, 2); },
+        beam:    (d) => { tone("sawtooth", 70, 90, d, 0.35); tone("square", 140, 180, d, 0.1); noise(d, 0.25, "bandpass", 800, 1400); },
+        whistle: () => tone("sine", 1400, 300, 0.9, 0.15),
+        boom:    () => { noise(0.6, 1.0, "lowpass", 1800, 60); tone("sine", 110, 30, 0.5, 0.9); },
+        // player gets hurt
+        slowed:  () => tone("sine", 600, 150, 0.3, 0.3),
+        bite:    () => { tone("square", 1400, 900, 0.05, 0.2); tone("square", 1000, 700, 0.05, 0.2, 0.07); },
+        confuse: () => { tone("triangle", 600, 300, 0.15, 0.25); tone("triangle", 300, 600, 0.15, 0.25, 0.15); tone("triangle", 600, 300, 0.15, 0.25, 0.3); },
+        // big moments
+        thud:    () => { tone("sine", 140, 40, 0.35, 0.9); noise(0.2, 0.5, "lowpass", 500, 100); },
+        pickup:  () => arpeggio("square", [523, 659, 784, 1047], 0.07, 0.1, 0.2),
+        growl:   () => { tone("sawtooth", 90, 50, 0.8, 0.35); noise(0.8, 0.3, "lowpass", 500, 150); },
+        roar:    () => { tone("sawtooth", 70, 35, 1.6, 0.45); tone("square", 75, 40, 1.6, 0.2); noise(1.6, 0.5, "lowpass", 900, 120); },
+        lose:    () => { arpeggio("square", [392, 330, 262, 196], 0.22, 0.25, 0.22); tone("sawtooth", 300, 40, 1.1, 0.25, 0.1); },
+        win:     () => { arpeggio("triangle", [523, 659, 784, 1047, 1319], 0.12, 0.25, 0.3); arpeggio("square", [523, 659, 784, 1047, 1319], 0.12, 0.2, 0.1); }
+    };
+
+    // Play a sound by name (quietly does nothing if sound is off or not unlocked yet)
+    function play(name, arg) {
+        if (!ctx || muted || ctx.state !== "running" || !sounds[name]) return;
+        const now = performance.now();
+        if (now - (lastPlayed[name] || 0) < 45) return;        // don't stack the same sound
+        lastPlayed[name] = now;
+        try { sounds[name](arg); } catch (e) { console.error(e); }
+    }
+
+    // Charge-up sound when the ghost starts a skill
+    function cast(skill, seconds) {
+        play(FIRE_SKILLS.includes(skill) ? "charge" : "magic", seconds);
+    }
+
+    // Sound when the skill actually happens
+    function skill(name) {
+        if (name === "teleport") play("teleport");
+        else if (name === "fireballs") play("fireball");
+        else if (name === "pulse") play("pulse");
+        else if (name === "obstacles") play("stone");
+        else if (name === "bats") play("bats");
+        else if (name === "inferno") play("inferno");
+        else if (name === "spiral") play("spiral");
+        else if (name === "meteors") play("whistle");
+        else if (name === "slam") play("boom");
+        else if (name === "beam") play("beam", 1.4);
+        else if (name === "cross") play("beam", 2.4);
+    }
+
+    // The first touch / key press unlocks sound (browser rule)
+    const unlockEvents = ["pointerdown", "pointerup", "touchend", "click", "keydown"];
+    function unlock() {
+        if (!setup()) return;
+        const check = () => {
+            if (ctx.state === "running") unlockEvents.forEach((n) => window.removeEventListener(n, unlock, true));
+        };
+        if (ctx.state !== "running") ctx.resume().then(check).catch(() => {});
+        try {                                              // silent blip: wakes up iPhones
+            const s = ctx.createBufferSource();
+            s.buffer = ctx.createBuffer(1, 1, 22050);
+            s.connect(ctx.destination);
+            s.start(0);
+        } catch (e) { /* ok */ }
+        check();
+    }
+    unlockEvents.forEach((n) => window.addEventListener(n, unlock, true));
+
+    function toggle() {
+        muted = !muted;
+        try { localStorage.setItem("ghostMuted", muted ? "1" : "0"); } catch (e) { /* ok */ }
+        if (master) master.gain.value = muted ? 0 : 0.5;
+        showMute();
+        if (!muted) play("click");
+    }
+
+    if (muteBtn) {
+        muteBtn.addEventListener("click", () => { toggle(); muteBtn.blur(); });
+    }
+    document.addEventListener("keydown", (e) => { if (e.key === "m" || e.key === "M") toggle(); });
+    document.addEventListener("visibilitychange", () => {  // silence when the tab is hidden
+        if (!ctx) return;
+        if (document.hidden) ctx.suspend(); else if (!muted) ctx.resume();
+    });
+    showMute();
+
+    return { play, cast, skill, toggle };
+})();
+
 const GHOST_EMOJI = ghost.textContent.trim();
 const PLAYER_EMOJI = player.textContent.trim();
 
@@ -357,10 +539,11 @@ function moveGhost(dt) {
     if (mode === "chase" && dashTimer <= 0) {
         mode = "warn"; modeTime = angry ? HARD_WARN_TIME : 0.6;
         ghost.classList.add("warning");
+        sfx.play("warn");
     } else if (mode === "warn") {
         speed = 0;
         modeTime -= dt;
-        if (modeTime <= 0) { mode = "dash"; modeTime = angry ? HARD_DASH_TIME : 0.4; ghost.classList.remove("warning"); }
+        if (modeTime <= 0) { mode = "dash"; modeTime = angry ? HARD_DASH_TIME : 0.4; ghost.classList.remove("warning"); sfx.play("dash"); }
     } else if (mode === "dash") {
         speed = baseSpeed * 3;
         modeTime -= dt;
@@ -430,6 +613,7 @@ function startCast(forced) {
     mode = "cast";
     modeTime = CAST_TIME[skill] * (phase2 ? 0.7 : 1);
     ghost.classList.add("casting");
+    sfx.cast(skill, modeTime);
     if (phase2 && skill !== "bats") skillTimer = PHASE2_SKILL_EVERY;   // phase 2: next skill in exactly 2 seconds
 
     const gcx = ghostX + SIZE / 2, gcy = ghostY + SIZE / 2;
@@ -499,6 +683,7 @@ function startCast(forced) {
 function finishCast() {
     const skill = castSkill;
     ghost.classList.remove("casting");
+    sfx.skill(skill);
 
     if (skill === "teleport") {
         ghostX = tpX; ghostY = tpY;
@@ -556,6 +741,7 @@ function pulseBlast() {
         confusedTime = CONFUSE_TIME;
         popup("CONFUSED!", pcx, playerY, "#c04dff");
         showToast("CONTROLS REVERSED!");
+        sfx.play("confuse");
     }
     const a = ringEl.animate([
         { transform: "scale(1)", opacity: 1 },
@@ -596,6 +782,7 @@ function updateOrbs(dt) {
         } else if (Math.hypot(o.x + 12 - pcx, o.y + 12 - pcy) < (o.deadly ? 22 : 28)) {   // hit the player
             if (o.deadly) { lose("YOU DIED"); return; }          // fire kills
             slowTime = SLOW_TIME;
+            sfx.play("slowed");
             popup("SLOWED!", pcx, playerY, "#4dc3ff");
             o.el.remove();
             orbs.splice(i, 1);
@@ -779,6 +966,7 @@ function meteorRain() {
 }
 
 function explode(x, y) {
+    sfx.play("boom");
     const boom = makeEl("meteor-boom", "");
     boom.style.width = boom.style.height = (METEOR_RADIUS * 2) + "px";
     boom.style.left = (x - METEOR_RADIUS) + "px";
@@ -869,6 +1057,7 @@ function banner(text, color) {
 }
 
 function enterPhase2() {
+    sfx.play("roar");
     phase2 = true;
     clearEffects();                            // old fireballs, bats and tombstones vanish
     game.classList.add("phase2");
@@ -926,6 +1115,7 @@ function updateBats(dt) {
         if (d < 26) {                                          // the bat bit the player
             if (BAT_DEADLY) { lose("The bats got you!"); return; }
             slowTime = SLOW_TIME;
+            sfx.play("bite");
             popup("BITTEN!", pcx, playerY, "#b36bff");
             b.el.remove();
             bats.splice(i, 1);
@@ -978,12 +1168,13 @@ function spawnGun() {
         { transform: "translateY(-22px)", offset: 0.78 },
         { transform: "translateY(0)" }
     ], { duration: 900, easing: "ease-in" });
-    fall.onfinish = () => pickup.classList.add("landed");
+    fall.onfinish = () => { pickup.classList.add("landed"); sfx.play("thud"); };
 
     showToast("THE GHOST IS IMMUNE!\nSURVIVE UNTIL PHASE 2");
 }
 
 function collectGun() {
+    sfx.play("pickup");
     hasGun = true;
     pickupActive = false;
     pickup.classList.add("hidden");
@@ -1021,6 +1212,7 @@ function muzzleFlash(x, y) {
 function fire() {
     if (!hasGun || gameOver) return;
     if (ammo <= 0) {                           // out of shells
+        sfx.play("empty");
         popup("EMPTY", playerX + SIZE / 2, playerY, "#ffffff");
         startReload();
         return;
@@ -1028,6 +1220,8 @@ function fire() {
     if (cooldown > 0) return;
 
     ammo--;
+    sfx.play("shot");
+    setTimeout(() => sfx.play("pump"), 180);
     if (navigator.vibrate) navigator.vibrate(30);     // phone buzz
     cooldown = SHOT_COOLDOWN;
     reloading = false;                         // shooting stops the reload
@@ -1069,6 +1263,7 @@ function fire() {
 
 function hitGhost() {
     if (!phase2) {
+        sfx.play("zap");
         popup("IMMUNE!", ghostX + SIZE / 2, ghostY, "#c04dff");   // until phase 2, shots only stun it
         cancelCast();
         stunTime = angry ? HARD_STUN_TIME : STUN_TIME;
@@ -1083,6 +1278,7 @@ function hitGhost() {
 
     // Phase 2: it takes damage, but it never flinches (like a real boss)
     ghostHp--;
+    sfx.play("hit");
     setBossBar();
     popup("HIT!", ghostX + SIZE / 2, ghostY, "#e6c97a");
     knockX = Math.cos(aim) * 90;
@@ -1094,6 +1290,7 @@ function hitGhost() {
 function startReload() {
     if (!hasGun || gameOver || reloading || ammo >= MAG) return;
     reloading = true;
+    sfx.play("reload");
     reloadTimer = RELOAD_PER_SHELL;
     gunInner.classList.add("reloading");
     updateAmmoUI();
@@ -1107,6 +1304,7 @@ function updateGun(dt) {
         reloadTimer -= dt;
         if (reloadTimer <= 0) {
             ammo++;
+            sfx.play(ammo >= MAG ? "pump" : "shell");
             reloadTimer = RELOAD_PER_SHELL;
             if (ammo >= MAG) {
                 reloading = false;
@@ -1136,6 +1334,7 @@ function endGame(title, win) {
 }
 
 function win() {
+    sfx.play("win");
     ghost.textContent = "💨";
     ghostHpBar.classList.add("hidden");
     bossBar.classList.add("hidden");
@@ -1155,6 +1354,7 @@ function bestTime(seconds) {
 
 function lose(title) {
     if (gameOver) return;
+    sfx.play("lose");
     player.textContent = "💀";
     if (navigator.vibrate) navigator.vibrate([80, 40, 160]);
     const secs = Math.floor(elapsed);
@@ -1172,6 +1372,7 @@ function checkCaught() {
 
 // At 20 seconds: the ghost turns red, faster, and dashes more often
 function becomeAngry() {
+    sfx.play("growl");
     angry = true;
     skillTimer = 3;                           // first skill comes 3 seconds later
     ghost.classList.add("angry");
@@ -1218,6 +1419,7 @@ function loop(now) {
 }
 
 function restartGame() {
+    sfx.play("click");
     playerX = 200; playerY = 200;
     ghostX = 0; ghostY = 0;
     elapsed = 0;
