@@ -624,7 +624,70 @@ h1 {
 #overlay.win #overlayTitle { color: #e6c97a; text-shadow: 0 0 16px rgba(230, 201, 122, 0.7); }
 
 /* Phase 2: the ghost is much bigger (it grows around its own center) */
-#ghost.phase2 { scale: 1.9; }
+/* (the boss stays the same size in phase 2) */
+
+/* ---------- Phase 2 boss: rage + bat form ---------- */
+/* Enraged: redder, angrier glow */
+#ghost.phase2.rage:not(.casting):not(.stunned) {
+    filter: drop-shadow(0 0 10px #ff0000) drop-shadow(0 0 24px #ff2d00) saturate(2.4) hue-rotate(-15deg);
+}
+
+/* Bat form: the vampire disappears, the bats are the boss */
+#ghost.batform { visibility: hidden; }
+
+.fbat {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 36px;
+    height: 36px;
+    font-size: 32px;
+    line-height: 36px;
+    text-align: center;
+    pointer-events: none;
+    z-index: 2;
+    filter: drop-shadow(0 0 8px #b36bff);
+    will-change: transform;
+}
+.fbat span {
+    display: inline-block;
+    animation: flap 0.12s steps(2) infinite alternate;
+}
+/* red flash = this bat is about to spit fire or dive */
+.fbat.warn {
+    filter: drop-shadow(0 0 10px #ff2d00) drop-shadow(0 0 4px #ff2d00);
+    animation: blinkText 0.15s steps(2) infinite;
+}
+
+/* Fire wall: green box shows where the hole in the wall will be */
+.gap-warn {
+    position: absolute;
+    box-sizing: border-box;
+    border: 2px dashed #4dffb8;
+    background: rgba(77, 255, 184, 0.2);
+    pointer-events: none;
+    animation: blinkText 0.25s steps(2) infinite;
+}
+
+/* ---------- Hearts + dodge roll ---------- */
+#hearts {
+    position: absolute;
+    left: 10px;
+    top: 8px;
+    z-index: 3;
+    font-size: 18px;
+    line-height: 1;
+    letter-spacing: 3px;
+    pointer-events: none;
+    text-shadow: 0 0 6px #000;
+}
+#roll {
+    background: radial-gradient(circle at 35% 30%, #7dffb0, #1fa857 70%);
+    box-shadow: 0 6px 0 #0d5c2c, 0 8px 0 #000;
+}
+#actions button.cooling { opacity: 0.45; }
+#player.hurt { animation: blinkText 0.12s steps(2) infinite; }
+#player.rolling { opacity: 0.5; filter: drop-shadow(0 0 8px #4dffb8) blur(0.6px); }
 
 /* ---------- Phone support ---------- */
 html, body {
