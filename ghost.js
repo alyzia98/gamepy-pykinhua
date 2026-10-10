@@ -24,188 +24,6 @@ const reloadBtn = document.getElementById("reload");
 const GUN_OK = [gunEl, gunInner, pickup, pickupInner, ghostHpBar, ghostHpFill,
                 hud, ammoEl, reloadText, toastEl, fireBtn, reloadBtn, overlayTitle].every(Boolean);
 
-// ---------- Sound effects ----------
-// All sounds are made with code (Web Audio), so there are no audio files to upload.
-// Phones only allow sound after the first touch, so the sound starts on your first tap or key press.
-const sfx = (() => {
-    let ctx = null, master = null, noiseBuf = null;
-    let muted = false;
-    try { muted = localStorage.getItem("ghostMuted") === "1"; } catch (e) { /* ok */ }
-    const lastPlayed = {};
-    const muteBtn = document.getElementById("mute");
-
-    function showMute() {
-        if (!muteBtn) return;
-        muteBtn.textContent = muted ? "\uD83D\uDD07" : "\uD83D\uDD0A";
-        muteBtn.setAttribute("aria-pressed", muted ? "true" : "false");
-    }
-
-    function setup() {
-        if (ctx) return true;
-        const AC = window.AudioContext || window.webkitAudioContext;
-        if (!AC) return false;
-        ctx = new AC();
-        const comp = ctx.createDynamicsCompressor();      // stops loud sounds from clipping
-        master = ctx.createGain();
-        master.gain.value = muted ? 0 : 0.5;
-        master.connect(comp);
-        comp.connect(ctx.destination);
-        noiseBuf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
-        const data = noiseBuf.getChannelData(0);
-        for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
-        return true;
-    }
-
-    // A musical beep that slides from frequency f0 to f1
-    function tone(type, f0, f1, dur, vol, delay) {
-        const t = ctx.currentTime + (delay || 0);
-        const osc = ctx.createOscillator();
-        const g = ctx.createGain();
-        osc.type = type;
-        osc.frequency.setValueAtTime(f0, t);
-        if (f1 !== f0) osc.frequency.exponentialRampToValueAtTime(Math.max(f1, 1), t + dur);
-        g.gain.setValueAtTime(0.0001, t);
-        g.gain.linearRampToValueAtTime(vol, t + 0.008);
-        g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-        osc.connect(g);
-        g.connect(master);
-        osc.start(t);
-        osc.stop(t + dur + 0.05);
-    }
-
-    // A burst of noise through a filter (bangs, whooshes, clicks)
-    function noise(dur, vol, filter, f0, f1, delay, q) {
-        const t = ctx.currentTime + (delay || 0);
-        const src = ctx.createBufferSource();
-        src.buffer = noiseBuf;
-        const fl = ctx.createBiquadFilter();
-        fl.type = filter;
-        fl.Q.value = q || 1;
-        fl.frequency.setValueAtTime(f0, t);
-        if (f1 !== f0) fl.frequency.exponentialRampToValueAtTime(Math.max(f1, 1), t + dur);
-        const g = ctx.createGain();
-        g.gain.setValueAtTime(0.0001, t);
-        g.gain.linearRampToValueAtTime(vol, t + 0.008);
-        g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-        src.connect(fl);
-        fl.connect(g);
-        g.connect(master);
-        src.start(t, Math.random() * 0.5);
-        src.stop(t + dur + 0.05);
-    }
-
-    function arpeggio(type, notes, step, dur, vol, delay) {
-        notes.forEach((f, i) => tone(type, f, f, dur, vol, (delay || 0) + i * step));
-    }
-
-    const FIRE_SKILLS = ["fireballs", "inferno", "meteors", "beam", "cross", "spiral", "slam"];
-
-    const sounds = {
-        click:   () => tone("square", 700, 700, 0.04, 0.15),
-        // gun
-        shot:    () => { noise(0.35, 0.9, "lowpass", 3000, 200); tone("sawtooth", 150, 40, 0.3, 0.7); noise(0.05, 0.5, "highpass", 2000, 2000); },
-        pump:    () => { noise(0.04, 0.45, "bandpass", 1800, 1800, 0, 3); noise(0.05, 0.45, "bandpass", 1200, 1200, 0.09, 3); },
-        empty:   () => { noise(0.03, 0.35, "highpass", 3000, 3000); tone("square", 900, 700, 0.04, 0.12); },
-        reload:  () => { noise(0.05, 0.4, "bandpass", 1500, 1500, 0, 3); },
-        shell:   () => { noise(0.04, 0.45, "bandpass", 2200, 2200, 0, 4); tone("square", 300, 200, 0.05, 0.15); },
-        zap:     () => { tone("square", 900, 200, 0.25, 0.22); tone("sawtooth", 1300, 300, 0.2, 0.15); },
-        hit:     () => { noise(0.15, 0.6, "lowpass", 1500, 300); tone("sine", 200, 60, 0.2, 0.6); },
-        // ghost moves
-        warn:    () => { tone("square", 880, 880, 0.08, 0.2); tone("square", 880, 880, 0.08, 0.2, 0.12); },
-        dash:    () => noise(0.4, 0.5, "bandpass", 400, 2500, 0, 1.5),
-        magic:   (d) => { tone("sine", 300, 900, d, 0.2); tone("triangle", 450, 1350, d, 0.12); },
-        charge:  (d) => { tone("sawtooth", 110, 330, d, 0.18); noise(d, 0.2, "lowpass", 300, 900); },
-        teleport:() => { tone("sine", 1200, 200, 0.3, 0.3); tone("sine", 200, 1200, 0.25, 0.3, 0.15); },
-        fireball:() => { noise(0.35, 0.4, "bandpass", 1500, 500, 0, 2); tone("sawtooth", 300, 120, 0.3, 0.15); },
-        pulse:   () => { tone("sine", 120, 40, 0.5, 0.8); noise(0.3, 0.3, "lowpass", 800, 100); },
-        stone:   () => { tone("sine", 90, 45, 0.25, 0.8); noise(0.15, 0.5, "lowpass", 600, 150); },
-        bats:    () => { for (let i = 0; i < 6; i++) tone("triangle", 1700 + Math.random() * 400, 2600, 0.06, 0.12, i * 0.06); },
-        inferno: () => { noise(0.8, 0.5, "lowpass", 2000, 150); tone("sawtooth", 80, 160, 0.7, 0.3); },
-        spiral:  () => { for (let i = 0; i < 8; i++) noise(0.15, 0.3, "bandpass", 1800, 700, i * 0.25, 2); },
-        beam:    (d) => { tone("sawtooth", 70, 90, d, 0.35); tone("square", 140, 180, d, 0.1); noise(d, 0.25, "bandpass", 800, 1400); },
-        whistle: () => tone("sine", 1400, 300, 0.9, 0.15),
-        boom:    () => { noise(0.6, 1.0, "lowpass", 1800, 60); tone("sine", 110, 30, 0.5, 0.9); },
-        // player gets hurt
-        slowed:  () => tone("sine", 600, 150, 0.3, 0.3),
-        bite:    () => { tone("square", 1400, 900, 0.05, 0.2); tone("square", 1000, 700, 0.05, 0.2, 0.07); },
-        confuse: () => { tone("triangle", 600, 300, 0.15, 0.25); tone("triangle", 300, 600, 0.15, 0.25, 0.15); tone("triangle", 600, 300, 0.15, 0.25, 0.3); },
-        // big moments
-        thud:    () => { tone("sine", 140, 40, 0.35, 0.9); noise(0.2, 0.5, "lowpass", 500, 100); },
-        pickup:  () => arpeggio("square", [523, 659, 784, 1047], 0.07, 0.1, 0.2),
-        growl:   () => { tone("sawtooth", 90, 50, 0.8, 0.35); noise(0.8, 0.3, "lowpass", 500, 150); },
-        roar:    () => { tone("sawtooth", 70, 35, 1.6, 0.45); tone("square", 75, 40, 1.6, 0.2); noise(1.6, 0.5, "lowpass", 900, 120); },
-        lose:    () => { arpeggio("square", [392, 330, 262, 196], 0.22, 0.25, 0.22); tone("sawtooth", 300, 40, 1.1, 0.25, 0.1); },
-        win:     () => { arpeggio("triangle", [523, 659, 784, 1047, 1319], 0.12, 0.25, 0.3); arpeggio("square", [523, 659, 784, 1047, 1319], 0.12, 0.2, 0.1); }
-    };
-
-    // Play a sound by name (quietly does nothing if sound is off or not unlocked yet)
-    function play(name, arg) {
-        if (!ctx || muted || ctx.state !== "running" || !sounds[name]) return;
-        const now = performance.now();
-        if (now - (lastPlayed[name] || 0) < 45) return;        // don't stack the same sound
-        lastPlayed[name] = now;
-        try { sounds[name](arg); } catch (e) { console.error(e); }
-    }
-
-    // Charge-up sound when the ghost starts a skill
-    function cast(skill, seconds) {
-        play(FIRE_SKILLS.includes(skill) ? "charge" : "magic", seconds);
-    }
-
-    // Sound when the skill actually happens
-    function skill(name) {
-        if (name === "teleport") play("teleport");
-        else if (name === "fireballs") play("fireball");
-        else if (name === "pulse") play("pulse");
-        else if (name === "obstacles") play("stone");
-        else if (name === "bats") play("bats");
-        else if (name === "inferno") play("inferno");
-        else if (name === "spiral") play("spiral");
-        else if (name === "meteors") play("whistle");
-        else if (name === "slam") play("boom");
-        else if (name === "beam") play("beam", 1.4);
-        else if (name === "cross") play("beam", 2.4);
-    }
-
-    // The first touch / key press unlocks sound (browser rule)
-    const unlockEvents = ["pointerdown", "pointerup", "touchend", "click", "keydown"];
-    function unlock() {
-        if (!setup()) return;
-        const check = () => {
-            if (ctx.state === "running") unlockEvents.forEach((n) => window.removeEventListener(n, unlock, true));
-        };
-        if (ctx.state !== "running") ctx.resume().then(check).catch(() => {});
-        try {                                              // silent blip: wakes up iPhones
-            const s = ctx.createBufferSource();
-            s.buffer = ctx.createBuffer(1, 1, 22050);
-            s.connect(ctx.destination);
-            s.start(0);
-        } catch (e) { /* ok */ }
-        check();
-    }
-    unlockEvents.forEach((n) => window.addEventListener(n, unlock, true));
-
-    function toggle() {
-        muted = !muted;
-        try { localStorage.setItem("ghostMuted", muted ? "1" : "0"); } catch (e) { /* ok */ }
-        if (master) master.gain.value = muted ? 0 : 0.5;
-        showMute();
-        if (!muted) play("click");
-    }
-
-    if (muteBtn) {
-        muteBtn.addEventListener("click", () => { toggle(); muteBtn.blur(); });
-    }
-    document.addEventListener("keydown", (e) => { if (e.key === "m" || e.key === "M") toggle(); });
-    document.addEventListener("visibilitychange", () => {  // silence when the tab is hidden
-        if (!ctx) return;
-        if (document.hidden) ctx.suspend(); else if (!muted) ctx.resume();
-    });
-    showMute();
-
-    return { play, cast, skill, toggle };
-})();
-
 const GHOST_EMOJI = ghost.textContent.trim();
 const PLAYER_EMOJI = player.textContent.trim();
 
@@ -219,23 +37,45 @@ const DASH_EVERY = 8;                         // seconds between dashes
 
 // After 20 seconds the ghost gets ANGRY (harder)
 const HARD_TIME = 20;
-// BOSS FIGHT: immune from 20s. At PHASE2_TIME it enters PHASE 2: it can be hurt, but spams every skill + fire attacks
+// BOSS FIGHT: immune from 20s. At PHASE2_TIME the VAMPIRE LORD wakes up: 500 HP, slow walk, patterned fire attacks, bat form
 const PHASE2_TIME = 30;                       // seconds until phase 2
-const PHASE2_SPEED = 200;                     // almost as fast as you (you run at 220)
-const PHASE2_SKILL_EVERY = 2;                 // a new skill EXACTLY every 2 seconds
-const PHASE2_BAT_EVERY = 5;                   // bats every 5 seconds
 const BOSS_NAME = "GHOST, LORD OF THE GRAVEYARD";
-const RING_ORBS = 18;                         // inferno: fire balls per ring
-const METEORS = 12;                           // meteor rain: how many
-const METEOR_RADIUS = 50;                     // explosion size
+const BOSS_HP = 500;                          // boss health
+const BOSS_SPEED = 55;                        // boss walk speed (slow, like a big Elden Ring boss)
+const BOSS_REST = 1.1;                        // seconds the boss walks between attacks (your chance to shoot)
+const BOSS_REST_RAGE = 0.6;                   // ...shorter once enraged
+const BOSS_RAGE_AT = 0.5;                     // enraged below 50% HP: faster, bigger attacks
+const FIRE_SPEED = 170;                       // base speed of fire balls
+const METEOR_RADIUS = 46;                     // explosion size
 const BEAM_LEN = 400;                         // fire beam length
-const BEAM_SPEED = 1.7;                       // how fast the beam sweeps (radians per second)
+const BEAM_SPEED = 1.7;                       // (single beam sweep speed)
 const CROSS_SPEED = 1.0;                      // how fast the 4-arm cross spins
 const BEAM_HALF = 24;                         // beam width for hit checks
 const SLAM_RADIUS = 110;                      // fire slam size
-const FIRE_SPEED = 170;                       // speed of fire balls in the boss attacks
-const BAT_COUNT_PHASE2 = 9;                   // bats in phase 2
-const PHASE2_REACH = 36;                      // the ghost is BIGGER in phase 2: it catches you from further away
+const SLAM_IF_CLOSER = 85;                    // if you hug the boss it slams you away
+
+// Boss attack list. wind = warning time, dur = how long the boss is busy, still = stands still while attacking
+const ATK = {
+    spiral:  { wind: 0.8, dur: 2.7, still: true  },
+    rings:   { wind: 0.7, dur: 2.6, still: true  },
+    wall:    { wind: 0.7, dur: 3.2, still: false },
+    meteors: { wind: 0.6, dur: 3.2, still: false },
+    cross:   { wind: 1.0, dur: 3.0, still: true  },
+    slam:    { wind: 1.0, dur: 1.0, still: true  }
+};
+const PATTERN      = ["spiral", "rings", "wall", "meteors", "cross"];            // the boss ALWAYS attacks in this order: learn it!
+const PATTERN_RAGE = ["rings", "wall", "spiral", "cross", "meteors", "wall"];    // enraged order
+
+// Bat form: at these HP fractions the boss turns into bats. Shoot them all to bring him back (and stagger him)
+const BAT_FORM_AT = [0.7, 0.35];
+const BAT_FORM_COUNT = 5;                     // bats you must shoot
+const BAT_FORM_TIME = 14;                     // if you are too slow he turns back, heals and punishes you
+const BAT_FORM_SPEED = 190;                   // bats flutter speed
+const BAT_DIVE_SPEED = 340;                   // bat dive speed
+const BAT_HEAL = 40;                          // HP he heals if you are too slow
+const BAT_STAGGER = 2.5;                      // seconds he is stunned when you kill all bats
+const STAGGER_MULT = 1.5;                     // damage bonus while he is stunned
+const BOSS_REACH = 22.5;                       // the boss is BIGGER: it catches you from further away
 const HARD_SPEED_BONUS = 30;                  // extra speed at the moment it turns angry
 const HARD_RAMP = 4;                          // gets this much faster every second after 20s
 const HARD_MAX = 260;                         // top speed. You run at 220, so it WILL catch you
@@ -247,8 +87,7 @@ const HARD_STUN_TIME = 0.5;                   // shotgun freezes it for less tim
 // Angry ghost special skills (it picks one every few seconds)
 const HARD_SKILL_EVERY = 2.5;                 // seconds between skills
 const SKILLS = ["teleport", "fireballs", "pulse", "obstacles"];
-const PHASE2_SKILLS = [...SKILLS, "inferno", "meteors", "beam", "spiral", "slam", "cross"];   // phase 2 adds 6 deadly fire attacks
-const CAST_TIME = { teleport: 0.8, fireballs: 0.55, pulse: 0.8, obstacles: 0.9, bats: 0.5, inferno: 0.8, meteors: 0.6, beam: 0.9, spiral: 0.7, slam: 1.0, cross: 0.9 };   // warning time before each skill
+const CAST_TIME = { teleport: 0.8, fireballs: 0.55, pulse: 0.8, obstacles: 0.9, bats: 0.5 };   // warning time before each skill
 const ORB_COUNT = 3;                          // fireballs per cast
 const ORB_SPEED = 170;                        // fireball speed (pixels per second)
 const SLOW_TIME = 1.5;                        // a fireball slows you for this long
@@ -275,6 +114,13 @@ const OBSTACLE_LEVELS = [
     { name: "HARD",   color: "#ff4d4d", count: 10, near: 5, minDist: 62,  life: 10 }
 ];                                            // near = how many are placed close around you
 
+// Player hearts + dodge roll (hearts are used in phase 2, the boss fight)
+const HEARTS = 3;                             // hits you can take
+const HURT_INVINCIBLE = 1.4;                  // seconds you can't be hurt after a hit (you blink)
+const ROLL_TIME = 0.3;                        // dodge roll length (you can't be hurt while rolling)
+const ROLL_SPEED = 480;                       // roll speed (pixels per second)
+const ROLL_COOLDOWN = 0.9;                    // wait before you can roll again
+
 // Shotgun settings
 const GUN_TIME = 20;                          // shotgun drops at this many seconds
 const MAG = 2;                                // shells in the gun
@@ -282,7 +128,7 @@ const RELOAD_PER_SHELL = 0.7;                 // seconds to load one shell
 const SHOT_COOLDOWN = 0.35;                   // seconds between shots
 const RANGE = 190;                            // how far the shot reaches (pixels)
 const PELLETS = 6;                            // little balls flying out of the gun
-const GHOST_HP = 14;                           // shots needed to beat the ghost
+const DMG_CLOSE = 28, DMG_MID = 20, DMG_FAR = 12;   // boss damage per shot: closer = more pellets hit (under 90px / under 150px / farther)
 const STUN_TIME = 1;                          // ghost freezes this long when hit
 
 let playerX = 200, playerY = 200;
@@ -303,7 +149,7 @@ let reloading = false;
 let reloadTimer = 0;
 let cooldown = 0;
 let aim = 0;                                  // angle from player to ghost
-let ghostHp = GHOST_HP;
+let ghostHp = BOSS_HP;
 let angry = false;                            // true after 20 seconds
 let skillTimer = 8;                           // countdown to the ghost's next skill
 let lastSkill = "", castSkill = "";
@@ -322,9 +168,114 @@ let roarTime = 0;                             // ghost roars (frozen) when phase
 const timers = [];                            // things that happen a little later ({t, fn})
 const fx = [];                                // temporary fire effects on screen
 let beam = null, beamWarns = [], beamArms = 1, beamLock = 0, slamWarn = null;
+// Phase 2 boss brain
+let bossState = "walk";                       // "walk", "wind" (warning), "act" (attacking), "bats" (bat form), "stagger"
+let bossTime = 0, bossAtk = "", bossStep = 0, wallCount = 0;
+let bossRage = false;
+let batForm = false, batFormTime = 0, batStage = 0;
+let lastBat = { x: 200, y: 200 };
+const fbats = [];                             // the boss's bat form
+let hearts = HEARTS, invincible = 0;
+let rollTime = 0, rollCool = 0, rollDX = 0, rollDY = 1, lastDX = 0, lastDY = 1;
+const heartsEl = document.createElement("div");   // hearts on screen (only shown in phase 2)
+heartsEl.id = "hearts";
+heartsEl.className = "hidden";
+game.appendChild(heartsEl);
+const rollBtn = document.getElementById("roll");  // (the ROLL button, if the HTML has it)
+if (rollBtn) rollBtn.classList.add("locked");       // locked until phase 2
 let stunTime = 0;
 let knockX = 0, knockY = 0;                   // ghost slides back when shot
 let lastTime = performance.now();
+
+// ---------- Sound (made with the browser's Web Audio, so no sound files are needed) ----------
+// Press M to turn the sound on/off.
+let audioCtx = null;
+let muted = false;
+try { muted = localStorage.getItem("ghostMuted") === "1"; } catch (e) { /* ok */ }
+
+function unlockAudio() {                       // browsers only allow sound after a key press or tap
+    try {
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === "suspended") audioCtx.resume();
+    } catch (e) { /* no sound available, that's ok */ }
+}
+document.addEventListener("keydown", unlockAudio);
+document.addEventListener("pointerdown", unlockAudio);
+
+// One beep: freq = pitch, dur = seconds, slideTo = pitch it slides to, delay = wait before playing
+function tone(freq, dur, type, vol, slideTo, delay) {
+    if (!audioCtx || muted) return;
+    const t = audioCtx.currentTime + (delay || 0);
+    const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+    o.type = type || "square";
+    o.frequency.setValueAtTime(freq, t);
+    if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, t + dur);
+    g.gain.setValueAtTime(vol || 0.1, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g); g.connect(audioCtx.destination);
+    o.start(t); o.stop(t + dur + 0.02);
+}
+
+// A burst of noise (gunshots, explosions, whooshes). The filter sweeps from one pitch to another
+function noise(dur, vol, fromHz, toHz, delay) {
+    if (!audioCtx || muted) return;
+    const t = audioCtx.currentTime + (delay || 0);
+    const len = Math.floor(audioCtx.sampleRate * dur);
+    const buf = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+    const src = audioCtx.createBufferSource();
+    src.buffer = buf;
+    const f = audioCtx.createBiquadFilter();
+    f.type = "lowpass";
+    f.frequency.setValueAtTime(fromHz, t);
+    f.frequency.exponentialRampToValueAtTime(toHz, t + dur);
+    const g = audioCtx.createGain();
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    src.connect(f); f.connect(g); g.connect(audioCtx.destination);
+    src.start(t);
+}
+
+const SFX = {
+    // gun
+    shoot:    () => { noise(0.25, 0.35, 3500, 250); tone(150, 0.16, "sawtooth", 0.16, 40); },
+    empty:    () => tone(180, 0.05, "square", 0.07),
+    shell:    () => { tone(900, 0.04, "square", 0.06); tone(520, 0.05, "square", 0.06, 0, 0.05); },
+    pickup:   () => [523, 659, 784, 1047].forEach((f, i) => tone(f, 0.12, "square", 0.09, 0, i * 0.07)),
+    // hits
+    immune:   () => tone(300, 0.15, "triangle", 0.12, 150),
+    hit:      () => { tone(220, 0.12, "sawtooth", 0.13, 90); noise(0.08, 0.15, 1500, 400); },
+    crit:     () => { tone(330, 0.2, "sawtooth", 0.16, 70); noise(0.15, 0.25, 2500, 300); tone(1200, 0.1, "square", 0.06, 600); },
+    batdie:   () => tone(1300, 0.14, "square", 0.09, 250),
+    // boss
+    warn:     () => { tone(440, 0.1, "square", 0.07); tone(440, 0.1, "square", 0.07, 0, 0.16); },
+    whoosh:   () => noise(0.5, 0.18, 300, 2800),
+    fireball: () => noise(0.25, 0.14, 2500, 400),
+    boom:     () => { noise(0.45, 0.35, 1800, 100); tone(90, 0.4, "sine", 0.28, 35); },
+    slam:     () => { noise(0.7, 0.45, 1500, 60); tone(70, 0.7, "sine", 0.35, 28); },
+    beam:     () => { tone(110, 0.9, "sawtooth", 0.1, 230); noise(0.9, 0.08, 800, 2000); },
+    roar:     () => { tone(90, 1.2, "sawtooth", 0.18, 45); tone(135, 1.2, "square", 0.06, 70); noise(1, 0.14, 700, 120); },
+    bats:     () => { for (let i = 0; i < 8; i++) tone(1400 + Math.random() * 900, 0.07, "square", 0.05, 0, i * 0.06); noise(0.6, 0.1, 3000, 500); },
+    screech:  () => tone(1800, 0.2, "sawtooth", 0.06, 2700),
+    spit:     () => tone(650, 0.15, "sawtooth", 0.09, 200),
+    bite:     () => { tone(220, 0.1, "square", 0.11, 90); noise(0.06, 0.12, 2000, 500); },
+    stagger:  () => { tone(320, 0.45, "triangle", 0.15, 70); noise(0.25, 0.2, 1200, 150); },
+    heal:     () => tone(300, 0.6, "sine", 0.14, 700),
+    // normal ghost skills
+    cast:     () => tone(500, 0.3, "sine", 0.09, 900),
+    teleport: () => tone(1000, 0.2, "sine", 0.09, 180),
+    tomb:     () => noise(0.2, 0.2, 600, 120),
+    ouch:     () => { tone(240, 0.25, "sawtooth", 0.15, 60); noise(0.12, 0.2, 1500, 300); },
+    roll:     () => noise(0.22, 0.12, 600, 3000),
+    // game over
+    die:      () => [440, 330, 262, 196].forEach((f, i) => tone(f, 0.25, "sawtooth", 0.13, 0, i * 0.18)),
+    win:      () => [523, 659, 784, 1047, 1319].forEach((f, i) => tone(f, 0.2, "square", 0.11, 0, i * 0.12))
+};
+
+function sfx(name) {
+    try { if (SFX[name]) SFX[name](); } catch (e) { /* sound must never break the game */ }
+}
 
 // Which directions are being held right now
 const held = { up: false, down: false, left: false, right: false };
@@ -354,7 +305,15 @@ function draw() {
 
     if (hasGun) {
         const pcx = playerX + SIZE / 2, pcy = playerY + SIZE / 2;
-        aim = Math.atan2(ghostY + SIZE / 2 - pcy, ghostX + SIZE / 2 - pcx);
+        let tx = ghostX + SIZE / 2, ty = ghostY + SIZE / 2;
+        if (batForm && fbats.length) {                  // bat form: the gun aims at the nearest bat
+            let best = Infinity;
+            for (const b of fbats) {
+                const d = Math.hypot(b.x + 18 - pcx, b.y + 18 - pcy);
+                if (d < best) { best = d; tx = b.x + 18; ty = b.y + 18; }
+            }
+        }
+        aim = Math.atan2(ty - pcy, tx - pcx);
         const flip = Math.cos(aim) < 0 ? -1 : 1;   // keep the gun right side up
         gunEl.style.transform = `translate(${pcx}px, ${pcy}px) rotate(${aim}rad) scaleY(${flip})`;
         ghostHpBar.style.transform = `translate(${ghostX}px, ${ghostY - 8}px)`;
@@ -400,6 +359,57 @@ function popup(text, x, y, color) {
     a.onfinish = () => el.remove();
 }
 
+// ---------- Hearts and dodge roll ----------
+
+function updateHearts() {
+    let html = "";
+    for (let i = 0; i < HEARTS; i++) html += i < hearts ? "\u2764\uFE0F" : "\uD83D\uDDA4";
+    heartsEl.innerHTML = html;
+}
+
+function canBeHurt() {
+    return !gameOver && invincible <= 0 && rollTime <= 0;     // rolling or just hit = fire goes through you
+}
+
+function shake(px) {
+    game.animate([
+        { transform: "translate(0, 0)" }, { transform: `translate(${-px}px, ${px / 2}px)` },
+        { transform: `translate(${px}px, ${-px / 2}px)` }, { transform: "translate(0, 0)" }
+    ], { duration: 220 });
+}
+
+// Take damage. Returns true if it really hurt you
+function hurt(dmg) {
+    if (!canBeHurt()) return false;
+    hearts -= dmg;
+    sfx("ouch");
+    shake(6);
+    if (navigator.vibrate) navigator.vibrate(60);
+    popup("-" + dmg + " \u2764", playerX + SIZE / 2, playerY, "#ff4d6d");
+    if (hearts <= 0) {
+        hearts = 0;
+        updateHearts();
+        lose("YOU DIED");
+        return true;
+    }
+    invincible = HURT_INVINCIBLE;
+    updateHearts();
+    return true;
+}
+
+function startRoll() {
+    if (gameOver || !phase2 || rollTime > 0 || rollCool > 0) return;   // the roll unlocks in phase 2
+    let dx = (held.right ? 1 : 0) - (held.left ? 1 : 0);
+    let dy = (held.down ? 1 : 0) - (held.up ? 1 : 0);
+    if (confusedTime > 0) { dx = -dx; dy = -dy; }
+    if (!dx && !dy) { dx = lastDX; dy = lastDY; }               // not pressing anything: roll the way you last moved
+    const len = Math.hypot(dx, dy) || 1;
+    rollDX = dx / len; rollDY = dy / len;
+    rollTime = ROLL_TIME;
+    rollCool = ROLL_COOLDOWN;
+    sfx("roll");
+}
+
 // ---------- Input ----------
 
 // Press / release a direction (keyboard and buttons both use this)
@@ -429,6 +439,12 @@ document.addEventListener("keydown", (e) => {
         if (!e.repeat) fire();                // one shot per key press
     } else if (key === "r") {
         startReload();
+    } else if (key === "Shift" || key === "k") {
+        if (!e.repeat) startRoll();           // SHIFT or K = dodge roll
+    } else if (key === "m") {                 // M = sound on/off
+        muted = !muted;
+        try { localStorage.setItem("ghostMuted", muted ? "1" : "0"); } catch (err) { /* ok */ }
+        showToast(muted ? "SOUND OFF" : "SOUND ON");
     }
 });
 
@@ -480,6 +496,10 @@ pad.addEventListener("pointerup", releasePad);
 pad.addEventListener("pointercancel", releasePad);
 pad.addEventListener("contextmenu", (e) => e.preventDefault());   // no long-press menu
 
+if (rollBtn) {
+    rollBtn.addEventListener("pointerdown", (e) => { e.preventDefault(); startRoll(); });
+}
+
 if (GUN_OK) {
     fireBtn.addEventListener("pointerdown", (e) => { e.preventDefault(); fire(); });
     reloadBtn.addEventListener("pointerdown", (e) => { e.preventDefault(); startReload(); });
@@ -495,7 +515,9 @@ function movePlayer(dt) {
     playerVX = dx;
     playerVY = dy;
 
-    const speed = slowTime > 0 ? PLAYER_SPEED * SLOW_FACTOR : PLAYER_SPEED;
+    if (dx || dy) { lastDX = dx; lastDY = dy; }
+    let speed = slowTime > 0 ? PLAYER_SPEED * SLOW_FACTOR : PLAYER_SPEED;
+    if (rollTime > 0) { dx = rollDX; dy = rollDY; speed = ROLL_SPEED; }   // rolling: dash in one direction
     const stuck = hitsObstacle(playerX, playerY);       // (safety: never trap you inside one)
     const nx = clamp(playerX + dx * speed * dt);
     if (stuck || !hitsObstacle(nx, playerY)) playerX = nx;
@@ -504,6 +526,12 @@ function movePlayer(dt) {
 
     slowTime = Math.max(0, slowTime - dt);
     confusedTime = Math.max(0, confusedTime - dt);
+    rollTime = Math.max(0, rollTime - dt);
+    rollCool = Math.max(0, rollCool - dt);
+    invincible = Math.max(0, invincible - dt);
+    player.classList.toggle("rolling", rollTime > 0);
+    player.classList.toggle("hurt", invincible > 0);
+    if (rollBtn) rollBtn.classList.toggle("cooling", rollCool > 0);
     player.classList.toggle("slowed", slowTime > 0);
     player.classList.toggle("confused", confusedTime > 0);
 }
@@ -527,8 +555,11 @@ function moveGhost(dt) {
         return;
     }
 
+    // Phase 2: the vampire lord has its own brain
+    if (phase2) { moveBoss(dt); return; }
+
     // 1. Gets faster the longer you survive (and a lot faster once angry)
-    const baseSpeed = phase2 ? PHASE2_SPEED : angry
+    const baseSpeed = angry
         ? Math.min(HARD_MAX, GHOST_START + HARD_TIME * SPEED_UP + HARD_SPEED_BONUS
                               + (elapsed - HARD_TIME) * HARD_RAMP)
         : Math.min(GHOST_MAX, GHOST_START + elapsed * SPEED_UP);
@@ -539,11 +570,10 @@ function moveGhost(dt) {
     if (mode === "chase" && dashTimer <= 0) {
         mode = "warn"; modeTime = angry ? HARD_WARN_TIME : 0.6;
         ghost.classList.add("warning");
-        sfx.play("warn");
     } else if (mode === "warn") {
         speed = 0;
         modeTime -= dt;
-        if (modeTime <= 0) { mode = "dash"; modeTime = angry ? HARD_DASH_TIME : 0.4; ghost.classList.remove("warning"); sfx.play("dash"); }
+        if (modeTime <= 0) { mode = "dash"; modeTime = angry ? HARD_DASH_TIME : 0.4; ghost.classList.remove("warning"); }
     } else if (mode === "dash") {
         speed = baseSpeed * 3;
         modeTime -= dt;
@@ -560,12 +590,11 @@ function moveGhost(dt) {
 
     // Special skills. Bats come every 10 seconds; the others are picked at random.
     batTimer -= dt;
-    if (phase2) skillTimer -= dt;                 // phase 2: the skill clock never stops
     if (mode === "chase") {
         if (batTimer <= 0) {
             startCast("bats"); speed = 0;
         } else {
-            if (!phase2) skillTimer -= dt;
+            skillTimer -= dt;
             if (skillTimer <= 0) { startCast(); speed = 0; }
         }
     }
@@ -604,17 +633,16 @@ ringEl.style.width = ringEl.style.height = (PULSE_RADIUS * 2) + "px";
 function startCast(forced) {
     let skill = forced;                                // "bats" is forced by its own timer
     if (!skill) {
-        const pool = phase2 ? PHASE2_SKILLS : angry ? SKILLS : ["obstacles"];   // before 20s only obstacles
+        const pool = angry ? SKILLS : ["obstacles"];   // before 20s only obstacles
         do { skill = pool[Math.floor(Math.random() * pool.length)]; }
         while (pool.length > 1 && skill === lastSkill);
         lastSkill = skill;
     }
     castSkill = skill;
     mode = "cast";
-    modeTime = CAST_TIME[skill] * (phase2 ? 0.7 : 1);
+    modeTime = CAST_TIME[skill];
     ghost.classList.add("casting");
-    sfx.cast(skill, modeTime);
-    if (phase2 && skill !== "bats") skillTimer = PHASE2_SKILL_EVERY;   // phase 2: next skill in exactly 2 seconds
+    sfx("cast");
 
     const gcx = ghostX + SIZE / 2, gcy = ghostY + SIZE / 2;
 
@@ -637,28 +665,8 @@ function startCast(forced) {
         ringEl.style.top = (gcy - PULSE_RADIUS) + "px";
         ringEl.classList.remove("hidden");
         popup("SCARE PULSE!", gcx, ghostY, "#c04dff");
-    } else if (skill === "inferno") {
-        popup("INFERNO!", gcx, ghostY, "#ff5a00");
-    } else if (skill === "meteors") {
-        popup("METEORS!", gcx, ghostY, "#ff5a00");
-    } else if (skill === "beam" || skill === "cross") {
-        beamArms = skill === "cross" ? 4 : 1;
-        beamLock = Math.atan2(playerY + SIZE / 2 - gcy, playerX + SIZE / 2 - gcx);   // aims where you are now
-        beamWarns = makeBeamEls("beam-warn", beamArms, gcx, gcy);
-        rotateBeamEls(beamWarns, beamLock);
-        popup(skill === "cross" ? "CROSS FIRE!" : "FIRE BEAM!", gcx, ghostY, "#ff5a00");
-    } else if (skill === "spiral") {
-        popup("FIRE SPIRAL!", gcx, ghostY, "#ff5a00");
-    } else if (skill === "slam") {
-        slamWarn = makeEl("meteor-warn", "");
-        slamWarn.style.width = slamWarn.style.height = (SLAM_RADIUS * 2) + "px";
-        slamWarn.style.left = (gcx - SLAM_RADIUS) + "px";
-        slamWarn.style.top = (gcy - SLAM_RADIUS) + "px";
-        slamWarn.classList.remove("hidden");
-        fx.push(slamWarn);
-        popup("FIRE SLAM!", gcx, ghostY, "#ff5a00");
     } else if (skill === "bats") {
-        batTimer = phase2 ? PHASE2_BAT_EVERY : BAT_EVERY;     // time until the next bats
+        batTimer = BAT_EVERY;                                 // time until the next bats
         popup("BATS!", gcx, ghostY, "#b36bff");
     } else if (skill === "obstacles") {
         obstacleLevel = Math.min(obstacleUses, OBSTACLE_LEVELS.length - 1);   // easy, then medium, then hard
@@ -683,9 +691,9 @@ function startCast(forced) {
 function finishCast() {
     const skill = castSkill;
     ghost.classList.remove("casting");
-    sfx.skill(skill);
 
     if (skill === "teleport") {
+        sfx("teleport");
         ghostX = tpX; ghostY = tpY;
         knockX = 0; knockY = 0;
         markerEl.classList.add("hidden");
@@ -698,24 +706,14 @@ function finishCast() {
         spawnObstacles();
     } else if (skill === "bats") {
         spawnBats();
-    } else if (skill === "inferno") {
-        infernoRing();
-    } else if (skill === "meteors") {
-        meteorRain();
-    } else if (skill === "beam" || skill === "cross") {
-        startBeam();
-    } else if (skill === "spiral") {
-        spiralFire();
-    } else if (skill === "slam") {
-        slamBlast();
     }
 
     mode = "chase";
     castSkill = "";
     if (skill === "bats") {
         skillTimer = Math.max(skillTimer, 1.5);
-    } else if (!phase2) {
-        skillTimer = (phase2 ? PHASE2_SKILL_EVERY : angry ? HARD_SKILL_EVERY : EARLY_SKILL_EVERY) * (0.8 + Math.random() * 0.4);
+    } else {
+        skillTimer = (angry ? HARD_SKILL_EVERY : EARLY_SKILL_EVERY) * (0.8 + Math.random() * 0.4);
     }
     dashTimer = Math.max(dashTimer, 1.2);                     // no instant dash after a skill
 }
@@ -741,7 +739,6 @@ function pulseBlast() {
         confusedTime = CONFUSE_TIME;
         popup("CONFUSED!", pcx, playerY, "#c04dff");
         showToast("CONTROLS REVERSED!");
-        sfx.play("confuse");
     }
     const a = ringEl.animate([
         { transform: "scale(1)", opacity: 1 },
@@ -751,9 +748,10 @@ function pulseBlast() {
 }
 
 function spawnOrbs() {
+    sfx("fireball");
     const gcx = ghostX + SIZE / 2, gcy = ghostY + SIZE / 2;
     const base = Math.atan2(playerY + SIZE / 2 - gcy, playerX + SIZE / 2 - gcx);
-    const count = phase2 ? 7 : ORB_COUNT;                      // more fireballs in phase 2
+    const count = ORB_COUNT;
     for (let i = 0; i < count; i++) {
         const angle = base + (i - (count - 1) / 2) * 0.4;   // fan out
         const el = document.createElement("div");
@@ -780,9 +778,15 @@ function updateOrbs(dt) {
             o.el.remove();
             orbs.splice(i, 1);
         } else if (Math.hypot(o.x + 12 - pcx, o.y + 12 - pcy) < (o.deadly ? 22 : 28)) {   // hit the player
-            if (o.deadly) { lose("YOU DIED"); return; }          // fire kills
+            if (o.deadly) {                                      // fire hurts (but not while rolling / just hit)
+                if (!canBeHurt()) continue;
+                hurt(1);
+                o.el.remove();
+                orbs.splice(i, 1);
+                if (gameOver) return;
+                continue;
+            }
             slowTime = SLOW_TIME;
-            sfx.play("slowed");
             popup("SLOWED!", pcx, playerY, "#4dc3ff");
             o.el.remove();
             orbs.splice(i, 1);
@@ -841,6 +845,7 @@ function removeWarns() {
 
 // The warning ends: the tombstones rise from the ground
 function spawnObstacles() {
+    sfx("tomb");
     const lv = OBSTACLE_LEVELS[obstacleLevel];
     removeWarns();
     obstaclePlaces.forEach((p) => {
@@ -878,7 +883,8 @@ function updateObstacles(dt) {
     }
 }
 
-// ----- Phase 2: boss fire attacks (all of these kill you, so learn the patterns) -----
+// ----- Phase 2: the vampire lord -----
+// He attacks in a FIXED ORDER (see PATTERN). Every attack shows a warning first. All fire kills you in one hit.
 
 function later(seconds, fn) { timers.push({ t: seconds, fn }); }
 
@@ -901,31 +907,146 @@ function makeOrb(cx, cy, angle, speed, deadly) {
                 vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed });
 }
 
-// Inferno: 4 rings of fire, each one shifted so you must slip through the gaps
-function infernoRing() {
-    for (let w = 0; w < 4; w++) {
-        later(w * 0.4, () => {
+function angleToPlayer(cx, cy) {
+    return Math.atan2(playerY + SIZE / 2 - cy, playerX + SIZE / 2 - cx);
+}
+
+function angleDiff(a, b) {
+    const d = a - b;
+    return Math.atan2(Math.sin(d), Math.cos(d));
+}
+
+// A ring of fire with a hole in it (gapAngle = middle of the hole, gapHalf = half of its size in radians)
+function ringWave(count, speed, gapAngle, gapHalf) {
+    const cx = ghostX + SIZE / 2, cy = ghostY + SIZE / 2;
+    for (let i = 0; i < count; i++) {
+        const a = (i / count) * Math.PI * 2;
+        if (Math.abs(angleDiff(a, gapAngle)) < gapHalf) continue;
+        makeOrb(cx, cy, a, speed, true);
+    }
+}
+
+// RINGS: waves of fire. Each wave has a hole, and the hole MOVES every wave, so you have to keep sliding through
+function ringsAttack() {
+    const waves = bossRage ? 5 : 4;
+    const speed = bossRage ? FIRE_SPEED + 25 : FIRE_SPEED;
+    for (let w = 0; w < waves; w++) {
+        later(w * 0.55, () => {
             const cx = ghostX + SIZE / 2, cy = ghostY + SIZE / 2;
-            for (let i = 0; i < RING_ORBS; i++) {
-                makeOrb(cx, cy, (i / RING_ORBS) * Math.PI * 2 + w * 0.17, FIRE_SPEED, true);
+            const side = (w % 2 === 0 ? 1 : -1) * 0.8;             // the hole is NEVER right where you stand
+            sfx("whoosh");
+            ringWave(24, speed, angleToPlayer(cx, cy) + side, 0.42);
+        });
+    }
+}
+
+// SPIRAL: 3 arms of fire spin out, then suddenly spin the other way. Stay in the gaps and change direction with them
+function spiralAttack() {
+    const arms = bossRage ? 4 : 3, steps = 26;
+    const speed = bossRage ? 165 : 150;
+    const dir0 = Math.random() < 0.5 ? 1 : -1;
+    let ang = Math.random() * Math.PI * 2;
+    for (let i = 0; i < steps; i++) {
+        later(i * 0.09, () => {
+            const cx = ghostX + SIZE / 2, cy = ghostY + SIZE / 2;
+            if (i % 4 === 0) sfx("fireball");
+            ang += (i < steps / 2 ? dir0 : -dir0) * 0.14;
+            for (let k = 0; k < arms; k++) makeOrb(cx, cy, ang + k * 2 * Math.PI / arms, speed, true);
+        });
+    }
+}
+
+// WALL: a wall of fire sweeps across the arena with a 2-ball hole (shown in green first).
+// 3 walls in a row, the hole jumps far each time. The side it comes from rotates: top, left, bottom, right
+function wallAttack() {
+    const dirs = ["down", "right", "up", "left"];
+    const dir = dirs[wallCount % 4];
+    wallCount++;
+    const W = game.clientWidth, H = game.clientHeight;
+    const len = (dir === "down" || dir === "up") ? W : H;
+    const GAP = 34;
+    const n = Math.floor(len / GAP) + 1;                    // fire balls per wall
+    const waves = bossRage ? 4 : 3;
+    const speed = bossRage ? 165 : 140;
+    let prev = -10;
+    for (let k = 0; k < waves; k++) {
+        let g = 1;
+        for (let tries = 0; tries < 30; tries++) {
+            g = 1 + Math.floor(Math.random() * (n - 3));
+            if (Math.abs(g - prev) >= 3) break;             // the hole jumps at least 3 spots
+        }
+        prev = g;
+        const c = (g + 0.5) * GAP;                          // middle of the hole
+        const t0 = k * 0.95;
+        let marker = null;
+        later(t0, () => {                                   // green box = where the hole will be
+            marker = makeEl("gap-warn", "");
+            if (dir === "down" || dir === "up") {
+                marker.style.left = (c - 45) + "px"; marker.style.width = "90px"; marker.style.height = "14px";
+                marker.style.top = (dir === "down" ? 2 : H - 16) + "px";
+            } else {
+                marker.style.top = (c - 45) + "px"; marker.style.height = "90px"; marker.style.width = "14px";
+                marker.style.left = (dir === "right" ? 2 : W - 16) + "px";
+            }
+            marker.classList.remove("hidden");
+            fx.push(marker);
+        });
+        later(t0 + 0.65, () => {
+            if (marker) marker.remove();
+            sfx("whoosh");
+            for (let j = 0; j < n; j++) {
+                if (j === g || j === g + 1) continue;
+                const p = j * GAP;
+                if (dir === "down")       makeOrb(p, -14, Math.PI / 2, speed, true);
+                else if (dir === "up")    makeOrb(p, H + 14, -Math.PI / 2, speed, true);
+                else if (dir === "right") makeOrb(-14, p, 0, speed, true);
+                else                      makeOrb(W + 14, p, Math.PI, speed, true);
             }
         });
     }
 }
 
-// Fire spiral: two arms of fire spin out of the ghost for 2 seconds
-function spiralFire() {
-    for (let i = 0; i < 26; i++) {
-        later(i * 0.08, () => {
-            const cx = ghostX + SIZE / 2, cy = ghostY + SIZE / 2;
-            makeOrb(cx, cy, i * 0.5, FIRE_SPEED - 10, true);
-            makeOrb(cx, cy, i * 0.5 + Math.PI, FIRE_SPEED - 10, true);
+// METEORS: a trail of explosions lands where you are HEADING (red circle first). Never run in a straight line
+function meteorTrail() {
+    const n = bossRage ? 10 : 7;
+    for (let i = 0; i < n; i++) {
+        later(i * 0.4, () => {
+            const lead = 0.8;
+            dropMeteor(playerX + SIZE / 2 + playerVX * PLAYER_SPEED * lead,
+                       playerY + SIZE / 2 + playerVY * PLAYER_SPEED * lead);
+            if (bossRage && i % 2 === 1) dropMeteor(Math.random() * game.clientWidth, Math.random() * game.clientHeight);
         });
     }
 }
 
-// Fire slam: a red circle around the ghost, then a deadly blast and a ring of fire
+function dropMeteor(x, y) {
+    x = Math.max(25, Math.min(game.clientWidth - 25, x));
+    y = Math.max(25, Math.min(game.clientHeight - 25, y));
+    const warn = makeEl("meteor-warn", "");
+    warn.style.width = warn.style.height = (METEOR_RADIUS * 2) + "px";
+    warn.style.left = (x - METEOR_RADIUS) + "px";
+    warn.style.top = (y - METEOR_RADIUS) + "px";
+    warn.classList.remove("hidden");
+    fx.push(warn);
+    later(0.9, () => { warn.remove(); explode(x, y); });
+}
+
+function explode(x, y) {
+    sfx("boom");
+    const boom = makeEl("meteor-boom", "");
+    boom.style.width = boom.style.height = (METEOR_RADIUS * 2) + "px";
+    boom.style.left = (x - METEOR_RADIUS) + "px";
+    boom.style.top = (y - METEOR_RADIUS) + "px";
+    boom.classList.remove("hidden");
+    fx.push(boom);
+    boom.animate([{ transform: "scale(0.3)", opacity: 1 }, { transform: "scale(1.15)", opacity: 0 }],
+                 { duration: 450, easing: "ease-out" }).onfinish = () => boom.remove();
+    if (Math.hypot(playerX + SIZE / 2 - x, playerY + SIZE / 2 - y) < METEOR_RADIUS + 4) hurt(1);
+}
+
+// SLAM: a red circle around the boss, then a deadly blast and a ring of fire (with a hole). He does this when you hug him
 function slamBlast() {
+    sfx("slam");
     const cx = ghostX + SIZE / 2, cy = ghostY + SIZE / 2;
     if (slamWarn) { slamWarn.remove(); slamWarn = null; }
     const boom = makeEl("meteor-boom", "");
@@ -936,50 +1057,15 @@ function slamBlast() {
     fx.push(boom);
     boom.animate([{ transform: "scale(0.3)", opacity: 1 }, { transform: "scale(1.1)", opacity: 0 }],
                  { duration: 500, easing: "ease-out" }).onfinish = () => boom.remove();
-    if (Math.hypot(playerX + SIZE / 2 - cx, playerY + SIZE / 2 - cy) < SLAM_RADIUS) { lose("YOU DIED"); return; }
-    for (let i = 0; i < 12; i++) makeOrb(cx, cy, (i / 12) * Math.PI * 2, 150, true);
-}
-
-// Meteor rain: red circles show where fire will land in 1 second. Get out of them!
-function meteorRain() {
-    const pcx = playerX + SIZE / 2, pcy = playerY + SIZE / 2;
-    for (let i = 0; i < METEORS; i++) {
-        let x, y;
-        if (i < 3) {          // the first 3 land where you are heading
-            x = pcx + playerVX * PLAYER_SPEED * 0.8 + (Math.random() - 0.5) * i * 50;
-            y = pcy + playerVY * PLAYER_SPEED * 0.8 + (Math.random() - 0.5) * i * 50;
-        } else {
-            x = Math.random() * game.clientWidth;
-            y = Math.random() * game.clientHeight;
-        }
-        x = Math.max(25, Math.min(game.clientWidth - 25, x));
-        y = Math.max(25, Math.min(game.clientHeight - 25, y));
-
-        const warn = makeEl("meteor-warn", "");
-        warn.style.width = warn.style.height = (METEOR_RADIUS * 2) + "px";
-        warn.style.left = (x - METEOR_RADIUS) + "px";
-        warn.style.top = (y - METEOR_RADIUS) + "px";
-        warn.classList.remove("hidden");
-        fx.push(warn);
-        later(1 + i * 0.08, () => { warn.remove(); explode(x, y); });
+    shake(8);
+    if (Math.hypot(playerX + SIZE / 2 - cx, playerY + SIZE / 2 - cy) < SLAM_RADIUS) {
+        hurt(2);                                               // the slam hurts the most
+        if (gameOver) return;
     }
+    ringWave(18, 160, angleToPlayer(cx, cy) + (Math.random() < 0.5 ? 0.6 : -0.6), 0.42);
 }
 
-function explode(x, y) {
-    sfx.play("boom");
-    const boom = makeEl("meteor-boom", "");
-    boom.style.width = boom.style.height = (METEOR_RADIUS * 2) + "px";
-    boom.style.left = (x - METEOR_RADIUS) + "px";
-    boom.style.top = (y - METEOR_RADIUS) + "px";
-    boom.classList.remove("hidden");
-    fx.push(boom);
-    boom.animate([{ transform: "scale(0.3)", opacity: 1 }, { transform: "scale(1.15)", opacity: 0 }],
-                 { duration: 450, easing: "ease-out" }).onfinish = () => boom.remove();
-    if (Math.hypot(playerX + SIZE / 2 - x, playerY + SIZE / 2 - y) < METEOR_RADIUS + 4) lose("YOU DIED");
-}
-
-// Fire beam: a thin line shows where it will cross, then a thick beam sweeps over it.
-// Fire cross: the same, but with 4 arms that spin around the ghost.
+// CROSS: 4 beams spin around the boss (he aims them first). Enraged: faster, and they suddenly spin the other way
 function makeBeamEls(cls, arms, ox, oy) {
     const els = [];
     for (let k = 0; k < arms; k++) {
@@ -998,6 +1084,7 @@ function rotateBeamEls(els, angle) {
 }
 
 function startBeam() {
+    sfx("beam");
     beamWarns.forEach((w) => w.remove());
     beamWarns = [];
     const ox = ghostX + SIZE / 2, oy = ghostY + SIZE / 2;
@@ -1006,8 +1093,9 @@ function startBeam() {
     beam = {
         els: makeBeamEls("beam", beamArms, ox, oy), ox, oy, dir,
         a: cross ? beamLock : beamLock - dir * 0.8,
-        speed: cross ? CROSS_SPEED : BEAM_SPEED,
-        t: cross ? 2.4 : 1.3
+        speed: cross ? (bossRage ? CROSS_SPEED * 1.25 : CROSS_SPEED) : BEAM_SPEED,
+        t: cross ? (bossRage ? 3.0 : 2.4) : 1.3,
+        flipAt: (cross && bossRage) ? 1.5 : 0
     };
     rotateBeamEls(beam.els, beam.a);
 }
@@ -1015,6 +1103,7 @@ function startBeam() {
 function updateBeam(dt) {
     if (!beam) return;
     beam.t -= dt;
+    if (beam.flipAt && beam.t <= beam.flipAt) { beam.dir = -beam.dir; beam.flipAt = 0; }   // enraged: surprise reverse
     beam.a += beam.dir * beam.speed * dt;
     rotateBeamEls(beam.els, beam.a);
 
@@ -1023,9 +1112,272 @@ function updateBeam(dt) {
         const a = beam.a + k * 2 * Math.PI / beam.els.length;
         const along = dx * Math.cos(a) + dy * Math.sin(a);
         const side = Math.abs(-dx * Math.sin(a) + dy * Math.cos(a));
-        if (along > 0 && along < BEAM_LEN && side < BEAM_HALF) { lose("YOU DIED"); return; }
+        if (along > 0 && along < BEAM_LEN && side < BEAM_HALF) {
+            hurt(1);
+            if (gameOver) return;
+        }
     }
     if (beam.t <= 0) { beam.els.forEach((e) => e.remove()); beam = null; }
+}
+
+// ----- The boss brain: walk -> warn -> attack -> walk ... (and bat form at low HP) -----
+
+function bossWalk(dt, speed) {
+    const dx = playerX - ghostX, dy = playerY - ghostY;
+    const d = Math.hypot(dx, dy);
+    if (d < 1) return;
+    const step = Math.min(speed * dt, d);
+    ghostX = clamp(ghostX + dx / d * step);
+    ghostY = clamp(ghostY + dy / d * step);
+}
+
+function checkRage() {
+    if (bossRage || ghostHp > BOSS_HP * BOSS_RAGE_AT) return;
+    bossRage = true;
+    ghost.classList.add("rage");
+    banner("ENRAGED", "#ff3b00");
+    sfx("roar");
+    showToast("HE IS ENRAGED!\nFASTER AND DEADLIER");
+}
+
+function moveBoss(dt) {
+    if (batForm) return;                                       // bat form: the bats do the moving
+    bossTime -= dt;
+
+    if (bossState === "walk") {
+        bossWalk(dt, bossRage ? BOSS_SPEED * 1.3 : BOSS_SPEED);
+        if (bossTime <= 0) bossPickNext();
+    } else if (bossState === "wind") {                         // standing still and glowing: DODGE IS COMING
+        if (bossTime <= 0) bossFire();
+    } else if (bossState === "act") {
+        if (!ATK[bossAtk].still) bossWalk(dt, BOSS_SPEED * 0.5);
+        if (bossTime <= 0) {
+            bossState = "walk";
+            bossTime = bossRage ? BOSS_REST_RAGE : BOSS_REST;
+        }
+    } else if (bossState === "stagger") {
+        if (bossTime <= 0) {
+            ghost.classList.remove("stunned");
+            bossState = "walk";
+            bossTime = 0.6;
+        }
+    }
+}
+
+function bossPickNext() {
+    // low HP: time for bat form
+    if (batStage < BAT_FORM_AT.length && ghostHp <= BOSS_HP * BAT_FORM_AT[batStage]) { startBatForm(); return; }
+
+    const gcx = ghostX + SIZE / 2, gcy = ghostY + SIZE / 2;
+    const close = Math.hypot(playerX + SIZE / 2 - gcx, playerY + SIZE / 2 - gcy) < SLAM_IF_CLOSER;
+    let name;
+    if (close) {
+        name = "slam";                                         // hugging the boss gets you slammed away
+    } else {
+        const list = bossRage ? PATTERN_RAGE : PATTERN;
+        name = list[bossStep % list.length];
+        bossStep++;
+    }
+    bossAtk = name;
+    bossState = "wind";
+    bossTime = ATK[name].wind * (bossRage ? 0.8 : 1);
+    ghost.classList.add("casting");
+
+    const label = { rings: "FIRE RINGS!", spiral: "FIRE SPIRAL!", wall: "FIRE WALL!",
+                    meteors: "METEORS!", cross: "CROSS FIRE!", slam: "FIRE SLAM!" };
+    popup(label[name], gcx, ghostY, "#ff5a00");
+    sfx("warn");
+
+    if (name === "slam") {
+        slamWarn = makeEl("meteor-warn", "");
+        slamWarn.style.width = slamWarn.style.height = (SLAM_RADIUS * 2) + "px";
+        slamWarn.style.left = (gcx - SLAM_RADIUS) + "px";
+        slamWarn.style.top = (gcy - SLAM_RADIUS) + "px";
+        slamWarn.classList.remove("hidden");
+        fx.push(slamWarn);
+    } else if (name === "cross") {
+        beamArms = 4;
+        beamLock = angleToPlayer(gcx, gcy);                    // he aims at where you are NOW
+        beamWarns = makeBeamEls("beam-warn", 4, gcx, gcy);
+        rotateBeamEls(beamWarns, beamLock);
+    }
+}
+
+function bossFire() {
+    ghost.classList.remove("casting");
+    if (bossAtk === "rings") ringsAttack();
+    else if (bossAtk === "spiral") spiralAttack();
+    else if (bossAtk === "wall") wallAttack();
+    else if (bossAtk === "meteors") meteorTrail();
+    else if (bossAtk === "cross") startBeam();
+    else if (bossAtk === "slam") slamBlast();
+    if (gameOver) return;
+    bossState = "act";
+    bossTime = ATK[bossAtk].dur * (bossRage ? 0.9 : 1);
+}
+
+// ----- Bat form: he turns into bats. Shoot ALL of them to bring him back (and stagger him) -----
+
+function startBatForm() {
+    const gcx = ghostX + SIZE / 2, gcy = ghostY + SIZE / 2;
+    batStage++;
+    sfx("bats");
+    clearEffects();                                            // old fire disappears
+    ghost.classList.remove("casting", "stunned");
+    ghost.classList.add("batform");                            // the vampire is gone...
+    batForm = true;
+    batFormTime = BAT_FORM_TIME;
+    bossState = "bats";
+
+    for (let i = 0; i < BAT_FORM_COUNT; i++) {                 // ...5 bats fly out of him
+        const a = (i / BAT_FORM_COUNT) * Math.PI * 2;
+        const el = document.createElement("div");
+        el.className = "fbat";
+        el.innerHTML = "<span>\uD83E\uDD87</span>";
+        game.appendChild(el);
+        fbats.push({ el, x: gcx - 18 + Math.cos(a) * 20, y: gcy - 18 + Math.sin(a) * 20,
+                     mode: "fly", t: 0.9 + i * 0.45, phase: Math.random() * 6,
+                     ang: a, spin: (i % 2 ? 1 : -1) * (0.9 + Math.random() * 0.6),
+                     dive: i % 2 === 0, bite: 0, dx: 0, dy: 0 });
+    }
+    popup("BAT FORM!", gcx, ghostY, "#b36bff");
+    banner("HE TURNS INTO BATS", "#b36bff");
+    showToast("SHOOT ALL " + BAT_FORM_COUNT + " BATS!\nDODGE THEIR FIRE");
+    setBossBar();
+}
+
+function updateBossBats(dt) {
+    if (!batForm || gameOver) return;
+    const W = game.clientWidth, H = game.clientHeight;
+    const pcx = playerX + SIZE / 2, pcy = playerY + SIZE / 2;
+    batFormTime -= dt;
+
+    for (const b of fbats) {
+        b.t -= dt;
+        b.phase += dt * 4;
+        b.bite = Math.max(0, b.bite - dt);
+        const cx = b.x + 18, cy = b.y + 18;
+
+        if (b.mode === "fly") {
+            // flutter around the player, in and out
+            b.ang += b.spin * dt;
+            const R = 125 + Math.sin(b.phase) * 45;
+            const dx = pcx + Math.cos(b.ang) * R - cx, dy = pcy + Math.sin(b.ang) * R - cy;
+            const d = Math.hypot(dx, dy) || 1;
+            const step = Math.min(BAT_FORM_SPEED * dt, d);
+            b.x += dx / d * step;
+            b.y += dy / d * step;
+            if (b.t <= 0) {                                    // red flash = it is about to attack
+                b.mode = b.dive ? "aimDive" : "aimSpit";
+                b.t = 0.55;
+                b.el.classList.add("warn");
+                if (b.mode === "aimDive") sfx("screech");
+            }
+        } else if (b.mode === "aimSpit") {                     // hovers, then spits a fireball at you
+            if (b.t <= 0) {
+                sfx("spit");
+                makeOrb(cx, cy, Math.atan2(pcy - cy, pcx - cx), 175, true);
+                b.mode = "fly"; b.t = 1 + Math.random(); b.dive = true;
+                b.el.classList.remove("warn");
+            }
+        } else if (b.mode === "aimDive") {                     // hovers, then dives at where you were
+            if (b.t <= 0) {
+                const dx = pcx - cx, dy = pcy - cy, d = Math.hypot(dx, dy) || 1;
+                b.dx = dx / d; b.dy = dy / d;
+                b.mode = "dive"; b.t = 0.65;
+            }
+        } else if (b.mode === "dive") {
+            b.x += b.dx * BAT_DIVE_SPEED * dt;
+            b.y += b.dy * BAT_DIVE_SPEED * dt;
+            if (b.t <= 0) {
+                b.mode = "fly"; b.t = 1.2 + Math.random(); b.dive = false;
+                b.el.classList.remove("warn");
+            }
+        }
+
+        b.x = Math.max(-10, Math.min(W - 26, b.x));            // stay in the arena
+        b.y = Math.max(-10, Math.min(H - 26, b.y));
+        b.el.style.transform = `translate(${b.x}px, ${b.y}px)`;
+
+        if (b.bite <= 0 && Math.hypot(b.x + 18 - pcx, b.y + 18 - pcy) < 28) {   // a bite slows you (then fire gets you)
+            slowTime = SLOW_TIME;
+            b.bite = 1.2;
+            sfx("bite");
+            popup("BITTEN!", pcx, playerY, "#b36bff");
+        }
+    }
+
+    if (batForm && batFormTime <= 0) endBatForm(false);        // too slow!
+}
+
+// The shotgun in bat form: hits every bat in front of you (inside the cone and in range)
+function shootBats(pcx, pcy) {
+    for (let i = fbats.length - 1; i >= 0; i--) {
+        const b = fbats[i];
+        const bx = b.x + 18, by = b.y + 18;
+        const d = Math.hypot(bx - pcx, by - pcy);
+        const off = Math.abs(angleDiff(Math.atan2(by - pcy, bx - pcx), aim));
+        if (d <= RANGE && (off < 0.38 || d < 45)) {
+            popup("HIT!", bx, b.y, "#e6c97a");
+            sfx("batdie");
+            lastBat = { x: bx, y: by };
+            b.el.remove();
+            fbats.splice(i, 1);
+        }
+    }
+    setBossBar();
+    if (batForm && fbats.length === 0) endBatForm(true);
+}
+
+function endBatForm(killed) {
+    let x = lastBat.x, y = lastBat.y;
+    if (!killed) {                                             // he reforms in the middle of his bats
+        if (fbats.length) {
+            x = fbats.reduce((s, b) => s + b.x + 18, 0) / fbats.length;
+            y = fbats.reduce((s, b) => s + b.y + 18, 0) / fbats.length;
+        }
+        const pcx = playerX + SIZE / 2, pcy = playerY + SIZE / 2;
+        const d = Math.hypot(x - pcx, y - pcy);
+        if (d < 120) {                                         // never pop up on top of you
+            const a = d > 1 ? Math.atan2(y - pcy, x - pcx) : Math.random() * Math.PI * 2;
+            x = pcx + Math.cos(a) * 130;
+            y = pcy + Math.sin(a) * 130;
+        }
+    }
+    fbats.forEach((b) => b.el.remove());
+    fbats.length = 0;
+    batForm = false;
+    ghostX = clamp(x - SIZE / 2);
+    ghostY = clamp(y - SIZE / 2);
+    knockX = 0; knockY = 0;
+    ghost.classList.remove("batform");
+    ghost.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 300 });
+    setBossBar();
+
+    const gcx = ghostX + SIZE / 2;
+    if (killed) {                                              // all bats shot: he falls back into a vampire, stunned
+        bossState = "stagger";
+        bossTime = BAT_STAGGER;
+        ghost.classList.add("stunned");
+        popup("STAGGERED!", gcx, ghostY, "#ffffff");
+        if (hearts < HEARTS) {                                 // reward: you get a heart back
+            hearts++;
+            updateHearts();
+            popup("+1 \u2764", playerX + SIZE / 2, playerY, "#ff4d6d");
+        }
+        sfx("stagger");
+        showToast("HE IS OPEN!\nSHOOT HIM! (BONUS DAMAGE)");
+    } else {                                                   // too slow: he heals and punishes you right away
+        ghostHp = Math.min(BOSS_HP, ghostHp + BAT_HEAL);
+        setBossBar();
+        popup("HE REFORMED!", gcx, ghostY, "#b36bff");
+        sfx("heal");
+        showToast("TOO SLOW! HE HEALED");
+        bossAtk = "rings";
+        bossState = "wind";
+        bossTime = 0.7;
+        ghost.classList.add("casting");
+    }
 }
 
 // ----- Boss bar, banner, phase 2 -----
@@ -1037,9 +1389,10 @@ bossBar.innerHTML = `<div class="boss-name">${BOSS_NAME}</div>
 game.appendChild(bossBar);
 
 function setBossBar() {
-    const pct = (Math.max(ghostHp, 0) / GHOST_HP * 100) + "%";
+    const pct = (Math.max(ghostHp, 0) / BOSS_HP * 100) + "%";
     bossBar.querySelector(".boss-fill").style.width = pct;
     bossBar.querySelector(".boss-chip").style.width = pct;   // the yellow "chip" lags behind
+    bossBar.querySelector(".boss-name").textContent = batForm ? BOSS_NAME + "   \uD83E\uDD87 x" + fbats.length : BOSS_NAME;
 }
 
 function banner(text, color) {
@@ -1057,22 +1410,38 @@ function banner(text, color) {
 }
 
 function enterPhase2() {
-    sfx.play("roar");
     phase2 = true;
     clearEffects();                            // old fireballs, bats and tombstones vanish
     game.classList.add("phase2");
     ghost.classList.add("phase2");
     bossBar.classList.remove("immune");
-    ghostHp = GHOST_HP;
+    ghostHp = BOSS_HP;
     setBossBar();
 
     mode = "chase"; castSkill = "";
     roarTime = 2;                              // it roars for 2 seconds: time to reload!
     knockX = 0; knockY = 0; stunTime = 0;
-    skillTimer = 2; batTimer = 5; dashTimer = 3;
+    // never wake up right on top of you: move the boss away if it is too close
+    const pdx = playerX - ghostX, pdy = playerY - ghostY, pd = Math.hypot(pdx, pdy);
+    if (pd < 170) {
+        const a = pd > 1 ? Math.atan2(-pdy, -pdx) : Math.random() * Math.PI * 2;
+        ghostX = clamp(playerX + Math.cos(a) * 180);
+        ghostY = clamp(playerY + Math.sin(a) * 180);
+        if (Math.hypot(playerX - ghostX, playerY - ghostY) < 120) {      // cornered: go to the opposite corner instead
+            ghostX = clamp(MAX - playerX); ghostY = clamp(MAX - playerY);
+        }
+    }
+    bossState = "walk"; bossTime = 1.5; bossAtk = "";
+    bossStep = 0; wallCount = 0; bossRage = false;
+    batForm = false; batStage = 0;
+    hearts = HEARTS; invincible = 0;                   // hearts appear in the boss fight
+    updateHearts();
+    heartsEl.classList.remove("hidden");
 
     banner("PHASE 2", "#e6c97a");
-    showToast("IT CAN BE HURT NOW!\nSHOOT IT!");
+    sfx("roar");
+    showToast("THE VAMPIRE LORD AWAKENS!\nROLL UNLOCKED: SHIFT / K");
+    if (rollBtn) rollBtn.classList.remove("locked");
     game.animate([
         { transform: "translate(0, 0)" }, { transform: "translate(-6px, 4px)" },
         { transform: "translate(6px, -4px)" }, { transform: "translate(-4px, -3px)" },
@@ -1084,7 +1453,7 @@ function enterPhase2() {
 
 function spawnBats() {
     const gcx = ghostX + SIZE / 2, gcy = ghostY + SIZE / 2;
-    const n = phase2 ? BAT_COUNT_PHASE2 : angry ? BAT_COUNT_ANGRY : BAT_COUNT;
+    const n = angry ? BAT_COUNT_ANGRY : BAT_COUNT;
     for (let i = 0; i < n; i++) {
         const a = (i / n) * Math.PI * 2;                       // start in a circle around the ghost
         const el = document.createElement("div");
@@ -1115,7 +1484,7 @@ function updateBats(dt) {
         if (d < 26) {                                          // the bat bit the player
             if (BAT_DEADLY) { lose("The bats got you!"); return; }
             slowTime = SLOW_TIME;
-            sfx.play("bite");
+            sfx("bite");
             popup("BITTEN!", pcx, playerY, "#b36bff");
             b.el.remove();
             bats.splice(i, 1);
@@ -1134,6 +1503,8 @@ function clearEffects() {
     obstacles.length = 0;
     bats.forEach((b) => b.el.remove());
     bats.length = 0;
+    fbats.forEach((b) => b.el.remove());
+    fbats.length = 0;
     timers.length = 0;
     fx.forEach((e) => e.remove());
     fx.length = 0;
@@ -1168,14 +1539,14 @@ function spawnGun() {
         { transform: "translateY(-22px)", offset: 0.78 },
         { transform: "translateY(0)" }
     ], { duration: 900, easing: "ease-in" });
-    fall.onfinish = () => { pickup.classList.add("landed"); sfx.play("thud"); };
+    fall.onfinish = () => pickup.classList.add("landed");
 
     showToast("THE GHOST IS IMMUNE!\nSURVIVE UNTIL PHASE 2");
 }
 
 function collectGun() {
-    sfx.play("pickup");
     hasGun = true;
+    sfx("pickup");
     pickupActive = false;
     pickup.classList.add("hidden");
     gunEl.classList.remove("hidden");
@@ -1212,16 +1583,15 @@ function muzzleFlash(x, y) {
 function fire() {
     if (!hasGun || gameOver) return;
     if (ammo <= 0) {                           // out of shells
-        sfx.play("empty");
         popup("EMPTY", playerX + SIZE / 2, playerY, "#ffffff");
+        sfx("empty");
         startReload();
         return;
     }
     if (cooldown > 0) return;
 
     ammo--;
-    sfx.play("shot");
-    setTimeout(() => sfx.play("pump"), 180);
+    sfx("shoot");
     if (navigator.vibrate) navigator.vibrate(30);     // phone buzz
     cooldown = SHOT_COOLDOWN;
     reloading = false;                         // shooting stops the reload
@@ -1254,8 +1624,9 @@ function fire() {
         { transform: "translate(0, 0)" }
     ], { duration: 140 });
 
-    // Did the ghost get hit?
-    if (Math.hypot(gcx - pcx, gcy - pcy) <= RANGE) hitGhost();
+    // Bat form: you can only hit the bats. Otherwise: did the ghost get hit?
+    if (batForm) shootBats(pcx, pcy);
+    else if (Math.hypot(gcx - pcx, gcy - pcy) <= RANGE) hitGhost();
 
     if (!gameOver && ammo === 0) startReload();   // auto reload when empty
     updateAmmoUI();
@@ -1263,7 +1634,7 @@ function fire() {
 
 function hitGhost() {
     if (!phase2) {
-        sfx.play("zap");
+        sfx("immune");
         popup("IMMUNE!", ghostX + SIZE / 2, ghostY, "#c04dff");   // until phase 2, shots only stun it
         cancelCast();
         stunTime = angry ? HARD_STUN_TIME : STUN_TIME;
@@ -1277,12 +1648,14 @@ function hitGhost() {
     }
 
     // Phase 2: it takes damage, but it never flinches (like a real boss)
-    ghostHp--;
-    sfx.play("hit");
+    const dist = Math.hypot(ghostX - playerX, ghostY - playerY);
+    let dmg = dist < 90 ? DMG_CLOSE : dist < 150 ? DMG_MID : DMG_FAR;     // closer = more pellets hit
+    if (bossState === "stagger") dmg = Math.round(dmg * STAGGER_MULT);    // he is open: bonus damage
+    ghostHp -= dmg;
+    sfx(bossState === "stagger" ? "crit" : "hit");
     setBossBar();
-    popup("HIT!", ghostX + SIZE / 2, ghostY, "#e6c97a");
-    knockX = Math.cos(aim) * 90;
-    knockY = Math.sin(aim) * 90;
+    popup("-" + dmg, ghostX + SIZE / 2, ghostY, bossState === "stagger" ? "#ffffff" : "#e6c97a");
+    checkRage();
     if (ghostHp <= 0) win();
 }
 
@@ -1290,7 +1663,6 @@ function hitGhost() {
 function startReload() {
     if (!hasGun || gameOver || reloading || ammo >= MAG) return;
     reloading = true;
-    sfx.play("reload");
     reloadTimer = RELOAD_PER_SHELL;
     gunInner.classList.add("reloading");
     updateAmmoUI();
@@ -1304,7 +1676,7 @@ function updateGun(dt) {
         reloadTimer -= dt;
         if (reloadTimer <= 0) {
             ammo++;
-            sfx.play(ammo >= MAG ? "pump" : "shell");
+            sfx("shell");
             reloadTimer = RELOAD_PER_SHELL;
             if (ammo >= MAG) {
                 reloading = false;
@@ -1334,8 +1706,9 @@ function endGame(title, win) {
 }
 
 function win() {
-    sfx.play("win");
     ghost.textContent = "💨";
+    sfx("win");
+    ghost.classList.remove("batform", "rage", "casting", "stunned");
     ghostHpBar.classList.add("hidden");
     bossBar.classList.add("hidden");
     finalScore.textContent = "You beat it in " + Math.floor(elapsed) + " seconds";
@@ -1354,8 +1727,8 @@ function bestTime(seconds) {
 
 function lose(title) {
     if (gameOver) return;
-    sfx.play("lose");
     player.textContent = "💀";
+    sfx("die");
     if (navigator.vibrate) navigator.vibrate([80, 40, 160]);
     const secs = Math.floor(elapsed);
     finalScore.textContent = "You survived " + secs + " seconds\nBest: " + bestTime(secs) + "s";
@@ -1364,15 +1737,23 @@ function lose(title) {
 
 function checkCaught() {
     if (gameOver) return;
-    const reach = phase2 ? PHASE2_REACH : SIZE / 2;
+    if (batForm || bossState === "stagger" || roarTime > 0) return;     // safe while he roars      // no body to touch (bats) / he is stunned
+    if (rollTime > 0) return;                            // you can roll right through him
+    const reach = phase2 ? BOSS_REACH : SIZE / 2;
     const close = Math.abs(ghostX - playerX) < reach &&
                   Math.abs(ghostY - playerY) < reach;
-    if (close) lose("The ghost got you!");
+    if (!close) return;
+    if (!phase2) { lose("The ghost got you!"); return; }
+    if (hurt(1) && !gameOver) {                          // phase 2: he hurts you and knocks you back
+        const a = Math.atan2(playerY - ghostY, playerX - ghostX);
+        playerX = clamp(playerX + Math.cos(a) * 90);
+        playerY = clamp(playerY + Math.sin(a) * 90);
+    }
 }
 
 // At 20 seconds: the ghost turns red, faster, and dashes more often
 function becomeAngry() {
-    sfx.play("growl");
+    sfx("roar");
     angry = true;
     skillTimer = 3;                           // first skill comes 3 seconds later
     ghost.classList.add("angry");
@@ -1401,6 +1782,7 @@ function loop(now) {
             updateOrbs(dt);
             updateObstacles(dt);
             updateBats(dt);
+            updateBossBats(dt);
             runTimers(dt);
             updateBeam(dt);
 
@@ -1419,7 +1801,6 @@ function loop(now) {
 }
 
 function restartGame() {
-    sfx.play("click");
     playerX = 200; playerY = 200;
     ghostX = 0; ghostY = 0;
     elapsed = 0;
@@ -1428,7 +1809,13 @@ function restartGame() {
     angry = false;
     phase2 = false; roarTime = 0;
     game.classList.remove("phase2");
-    ghost.classList.remove("phase2");
+    ghost.classList.remove("phase2", "rage", "batform", "casting", "stunned");
+    bossState = "walk"; bossTime = 0; bossAtk = ""; bossStep = 0; wallCount = 0;
+    bossRage = false; batForm = false; batStage = 0;
+    hearts = HEARTS; invincible = 0; rollTime = 0; rollCool = 0;
+    heartsEl.classList.add("hidden");
+    player.classList.remove("rolling", "hurt");
+    if (rollBtn) rollBtn.classList.add("locked");
     skillTimer = 8; lastSkill = ""; castSkill = "";
     obstacleUses = 0; obstacleLevel = 0;
     batTimer = BAT_EVERY;
@@ -1437,7 +1824,7 @@ function restartGame() {
     clearEffects();
     ghost.classList.remove("angry");
     stunTime = 0; knockX = 0; knockY = 0;
-    ghostHp = GHOST_HP;
+    ghostHp = BOSS_HP;
     if (ghostHpFill) ghostHpFill.style.width = "100%";
     bossBar.classList.add("hidden");
     setBossBar();
